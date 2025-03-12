@@ -18,8 +18,24 @@ func NewApiConfig() *apiConfig {
 }
 
 func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	a.fileServerHits.Add(1)
-	return next
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.fileServerHits.Add(1)
+		log.Println("Hit:", a.fileServerHits.Load())
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *apiConfig) showHits(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+	res := fmt.Sprintf("Hits: %d", a.fileServerHits.Load())
+	w.Write([]byte(res))
+}
+
+func (a *apiConfig) resetHits(w http.ResponseWriter, r *http.Request) {
+	log.Println("Reset hits to 0")
+	a.fileServerHits.Store(0)
 }
 
 func main() {
@@ -28,11 +44,10 @@ func main() {
 		Addr:    ":" + (PORT),
 		Handler: mux,
 	}
-	apiCfg := NewApiConfig()
+	api := NewApiConfig()
 
 	fileServerHandler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
-
-	mux.Handle("GET /app/", apiCfg.middlewareMetricsInc(fileServerHandler))
+	mux.Handle("/app/", api.middlewareMetricsInc(fileServerHandler))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
@@ -40,16 +55,9 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-		res := fmt.Sprintf("Hits: %d", apiCfg.fileServerHits.Load())
-		w.Write([]byte(res))
-	})
-
-	mux.HandleFunc("GET /reset", func(w http.ResponseWriter, r *http.Request) {
-		apiCfg.fileServerHits.CompareAndSwap(0, 0)
-	})
+	// Metrics
+	mux.HandleFunc("GET /metrics", api.showHits)
+	mux.HandleFunc("GET /reset", api.resetHits)
 
 	log.Printf("Started listening on :%s\n", PORT)
 	log.Fatal(srv.ListenAndServe())
