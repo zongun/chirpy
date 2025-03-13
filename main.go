@@ -1,22 +1,29 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/zongun/chirpy/internal/database"
 )
 
 const PORT = "8080"
 
 type apiConfig struct {
+	queries        *database.Queries
 	fileServerHits atomic.Int32
 }
 
-func NewApiConfig() *apiConfig {
-	return &apiConfig{}
+func NewApiConfig(q *database.Queries) *apiConfig {
+	return &apiConfig{queries: q}
 }
 
 func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -41,9 +48,28 @@ func (a *apiConfig) showHits(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(res))
 }
 
-func (a *apiConfig) resetHits(w http.ResponseWriter, r *http.Request) {
-	log.Println("Reset hits to 0")
+func (a *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 	a.fileServerHits.Store(0)
+}
+
+func (a *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
+	type userCreate struct {
+		Email string `json:"email"`
+	}
+
+	data := &userCreate{}
+	raw := json.NewDecoder(r.Body)
+	if err := raw.Decode(data); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Request was not structured properly")
+		return
+	}
+
+	user, err := a.queries.CreateUser(r.Context(), data.Email)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Failed to create user")
+	}
+
+	respondWithJSON(w, http.StatusOK, user)
 }
 
 func validateChirp(w http.ResponseWriter, r *http.Request) {
@@ -87,26 +113,35 @@ func respondWithJSON(w http.ResponseWriter, code int, payload any) {
 
 func profanityFilter(text string) string {
 	bannedWords := []string{"kerfuffle", "sharbert", "fornax"}
-	allWords := strings.Split(text, " ")
+	words := strings.Split(text, " ")
 
-	for i, word := range allWords {
+	for i, word := range words {
 		for _, bword := range bannedWords {
 			if strings.ToUpper(word) == strings.ToUpper(bword) {
-				allWords[i] = "****"
+				words[i] = "****"
 			}
 		}
 	}
 
-	return strings.Join(allWords, " ")
+	return strings.Join(words, " ")
 }
 
 func main() {
+	godotenv.Load()
+
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		panic(err)
+	}
+	dbQueries := database.New(db)
+	api := NewApiConfig(dbQueries)
+
 	mux := http.NewServeMux()
 	srv := &http.Server{
 		Addr:    ":" + (PORT),
 		Handler: mux,
 	}
-	api := NewApiConfig()
 
 	fileServerHandler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", api.middlewareMetricsInc(fileServerHandler))
@@ -118,9 +153,11 @@ func main() {
 	})
 	mux.HandleFunc("POST /api/validate_chirp", validateChirp)
 
+	mux.HandleFunc("POST /api/users", api.createUser)
+
 	// Metrics
 	mux.HandleFunc("GET /admin/metrics", api.showHits)
-	mux.HandleFunc("POST /admin/reset", api.resetHits)
+	mux.HandleFunc("POST /admin/reset", api.reset)
 
 	log.Printf("Started listening on :%s\n", PORT)
 	log.Fatal(srv.ListenAndServe())
