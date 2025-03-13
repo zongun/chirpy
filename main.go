@@ -9,13 +9,22 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/zongun/chirpy/internal/database"
 )
 
 const PORT = "8080"
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
 
 type apiConfig struct {
 	queries        *database.Queries
@@ -50,6 +59,20 @@ func (a *apiConfig) showHits(w http.ResponseWriter, r *http.Request) {
 
 func (a *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 	a.fileServerHits.Store(0)
+
+	result, err := a.queries.ResetUsers(r.Context())
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	count, err := result.RowsAffected()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	log.Printf("Deleted %d rows\n", count)
 }
 
 func (a *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
@@ -67,9 +90,10 @@ func (a *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	user, err := a.queries.CreateUser(r.Context(), data.Email)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Failed to create user")
+		return
 	}
 
-	respondWithJSON(w, http.StatusOK, user)
+	respondWithJSON(w, http.StatusCreated, User(user))
 }
 
 func validateChirp(w http.ResponseWriter, r *http.Request) {
