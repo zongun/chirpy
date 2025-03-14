@@ -6,10 +6,19 @@ import (
 	"log"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/zongun/chirpy/internal/auth"
 	"github.com/zongun/chirpy/internal/database"
 )
+
+type UserResponse struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
 
 type apiConfig struct {
 	queries        *database.Queries
@@ -61,31 +70,76 @@ func (a *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
-	type userCreate struct {
-		Email string `json:"email"`
-	}
+	var (
+		data = &database.CreateUserParams{}
+		raw  = json.NewDecoder(r.Body)
+	)
 
-	data := &userCreate{}
-	raw := json.NewDecoder(r.Body)
 	if err := raw.Decode(data); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Request was not structured properly")
 		return
 	}
 
-	user, err := a.queries.CreateUser(r.Context(), data.Email)
+	hash, err := auth.HashPassword(data.Password)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Failed to create user")
+		return
+	}
+	data.Password = hash
+
+	user, err := a.queries.CreateUser(r.Context(), *data)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Failed to create user")
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, user)
+	respondWithJSON(w, http.StatusCreated, UserResponse{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	})
+}
+
+func (a *apiConfig) Login(w http.ResponseWriter, r *http.Request) {
+	type LoginRequest struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	req := &LoginRequest{}
+	raw := json.NewDecoder(r.Body)
+	if err := raw.Decode(req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Request not correctly formatted")
+		return
+	}
+
+	user, err := a.queries.GetUserAuth(r.Context(), req.Email)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	if err := auth.VerifyPassword(req.Password, user.Password); err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, UserResponse{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	})
 }
 
 func (a *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
-	data := &database.CreateChirpParams{}
-	raw := json.NewDecoder(r.Body)
-	raw.Decode(data)
+	var (
+		data = &database.CreateChirpParams{}
+		raw  = json.NewDecoder(r.Body)
+	)
 
+	raw.Decode(data)
 	if len(data.Body) > 140 {
 		respondWithError(w, http.StatusBadRequest, "Chirping too much, max is 140 characters")
 		return
@@ -116,6 +170,7 @@ func (a *apiConfig) GetChirps(w http.ResponseWriter, r *http.Request) {
 
 func (a *apiConfig) GetChirpByID(w http.ResponseWriter, r *http.Request) {
 	pathID := r.PathValue("id")
+
 	id, err := uuid.Parse(pathID)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Not valid id")

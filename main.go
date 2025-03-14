@@ -13,7 +13,7 @@ import (
 	"github.com/zongun/chirpy/internal/database"
 )
 
-const PORT = "8080"
+const port = "8080"
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
 	respondWithJSON(w, code, struct {
@@ -34,8 +34,10 @@ func respondWithJSON(w http.ResponseWriter, code int, payload any) {
 }
 
 func profanityFilter(text string) string {
-	bannedWords := []string{"kerfuffle", "sharbert", "fornax"}
-	words := strings.Split(text, " ")
+	var (
+		bannedWords = []string{"kerfuffle", "sharbert", "fornax"}
+		words       = strings.Split(text, " ")
+	)
 
 	for i, word := range words {
 		for _, bword := range bannedWords {
@@ -52,16 +54,18 @@ func main() {
 	godotenv.Load()
 
 	dbURL := os.Getenv("DB_URL")
+
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		panic(err)
 	}
+
 	dbQueries := database.New(db)
 	api := NewApiConfig(dbQueries)
 
 	mux := http.NewServeMux()
 	srv := &http.Server{
-		Addr:    ":" + (PORT),
+		Addr:    ":" + (port),
 		Handler: mux,
 	}
 
@@ -77,12 +81,14 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", api.GetChirps)
 	mux.HandleFunc("GET /api/chirps/{id}", api.GetChirpByID)
 	mux.HandleFunc("POST /api/chirps", api.createChirp)
+
+	mux.HandleFunc("POST /api/login", api.Login)
 	mux.HandleFunc("POST /api/users", api.createUser)
 
 	// Metrics
 	mux.HandleFunc("GET /admin/metrics", api.showHits)
 	mux.HandleFunc("POST /admin/reset", api.reset)
 
-	log.Printf("Started listening on :%s\n", PORT)
+	log.Printf("Started listening on :%s\n", port)
 	log.Fatal(srv.ListenAndServe())
 }
