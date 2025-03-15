@@ -13,20 +13,30 @@ import (
 	"github.com/zongun/chirpy/internal/database"
 )
 
+const (
+	minExpireSec = 600
+	maxExpireSec = 3600
+)
+
 type UserResponse struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token,omitempty"`
 }
 
 type apiConfig struct {
 	queries        *database.Queries
 	fileServerHits atomic.Int32
+	tokenSecret    string
 }
 
-func NewApiConfig(q *database.Queries) *apiConfig {
-	return &apiConfig{queries: q}
+func NewApiConfig(q *database.Queries, tokenSecret string) *apiConfig {
+	return &apiConfig{
+		queries:     q,
+		tokenSecret: tokenSecret,
+	}
 }
 
 func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -103,11 +113,16 @@ func (a *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *apiConfig) Login(w http.ResponseWriter, r *http.Request) {
 	type LoginRequest struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email             string `json:"email"`
+		Password          string `json:"password"`
+		ExpiresInSecondes int    `json:"expires_in_seconds,omitempty"`
 	}
 
-	req := &LoginRequest{}
+	var (
+		expire time.Duration
+		req    = &LoginRequest{}
+	)
+
 	raw := json.NewDecoder(r.Body)
 	if err := raw.Decode(req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Request not correctly formatted")
@@ -125,19 +140,44 @@ func (a *apiConfig) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ExpiresInSecondes < minExpireSec || req.ExpiresInSecondes > maxExpireSec {
+		expire = time.Second * maxExpireSec
+	} else {
+		expire = time.Second * time.Duration(req.ExpiresInSecondes)
+	}
+
+	token, err := auth.CreateJWT(user.ID, a.tokenSecret, expire)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	respondWithJSON(w, http.StatusOK, UserResponse{
 		ID:        user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		Token:     token,
 	})
 }
 
-func (a *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
+func (a *apiConfig) CreateChirp(w http.ResponseWriter, r *http.Request) {
 	var (
 		data = &database.CreateChirpParams{}
 		raw  = json.NewDecoder(r.Body)
 	)
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, a.tokenSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
 
 	raw.Decode(data)
 	if len(data.Body) > 140 {
@@ -146,6 +186,7 @@ func (a *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data.Body = profanityFilter(data.Body)
+	data.UserID = userID
 
 	result, err := a.queries.CreateChirp(r.Context(), *data)
 	if err != nil {

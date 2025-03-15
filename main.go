@@ -52,8 +52,10 @@ func profanityFilter(text string) string {
 
 func main() {
 	godotenv.Load()
-
-	dbURL := os.Getenv("DB_URL")
+	var (
+		dbURL       = os.Getenv("DB_URL")
+		tokenSecret = os.Getenv("TOKEN_SECRET")
+	)
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -61,7 +63,7 @@ func main() {
 	}
 
 	dbQueries := database.New(db)
-	api := NewApiConfig(dbQueries)
+	api := NewApiConfig(dbQueries, tokenSecret)
 
 	mux := http.NewServeMux()
 	srv := &http.Server{
@@ -80,7 +82,7 @@ func main() {
 
 	mux.HandleFunc("GET /api/chirps", api.GetChirps)
 	mux.HandleFunc("GET /api/chirps/{id}", api.GetChirpByID)
-	mux.HandleFunc("POST /api/chirps", api.createChirp)
+	mux.HandleFunc("POST /api/chirps", api.CreateChirp)
 
 	mux.HandleFunc("POST /api/login", api.Login)
 	mux.HandleFunc("POST /api/users", api.createUser)
